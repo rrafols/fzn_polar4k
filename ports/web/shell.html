@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polarfield - fuzzion</title>
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; height: 100%; background: #111; color: #ddd;
+               font: 14px/1.4 Helvetica, Arial, sans-serif; overflow: hidden; }
+  #stage { position: absolute; inset: 0; display: grid; place-items: center; }
+  #wrap  { position: relative; width: min(100vw, calc(100vh * 4 / 3)); aspect-ratio: 4 / 3; }
+  canvas { width: 100%; height: 100%; display: block; background: #fff; }
+  #overlay { position: absolute; inset: 0; display: grid; place-items: center;
+             background: rgba(0,0,0,.65); cursor: pointer; text-align: center; }
+  #overlay h1 { font-weight: 700; font-size: 3em; margin: 0 0 .2em; letter-spacing: .05em; }
+  #overlay p  { margin: .2em 0; }
+  #overlay small { opacity: .6; }
+  #fs { position: absolute; right: 8px; bottom: 8px; opacity: .35; background: none;
+        border: 1px solid #888; color: #ddd; padding: 2px 8px; cursor: pointer; }
+  #fs:hover { opacity: 1; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="wrap">
+    <canvas id="canvas" width="1024" height="768"></canvas>
+    <div id="overlay">
+      <div>
+        <h1>polarfield</h1>
+        <p>fuzzion &middot; 2010 &middot; 4k intro</p>
+        <p id="msg">loading&hellip;</p>
+        <p><small>WebAssembly + WebGL2 port &middot; has sound</small></p>
+      </div>
+    </div>
+    <button id="fs" title="full screen">&#x26F6;</button>
+  </div>
+</div>
+<script>
+  var overlay = document.getElementById('overlay');
+  var msg = document.getElementById('msg');
+  var ready = false, done = false;
+
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    onRuntimeInitialized: function () {
+      ready = true;
+      msg.textContent = 'click to start';
+      /* ?autostart skips the overlay (audio may stay muted without a gesture) */
+      if (/[?&]autostart/.test(location.search)) overlay.click();
+    },
+    onPolarFinished: function () {
+      done = true;
+      msg.textContent = 'click to replay';
+      overlay.classList.remove('hidden');
+    },
+    printErr: function (t) { console.error(t); }
+  };
+
+  overlay.addEventListener('click', function () {
+    if (done) { location.reload(); return; }
+    if (!ready) return;
+    overlay.classList.add('hidden');
+    Module._web_begin();          /* must run inside the click for Web Audio */
+  });
+
+  document.getElementById('fs').addEventListener('click', function (e) {
+    e.stopPropagation();
+    var w = document.getElementById('wrap');
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (w.requestFullscreen) w.requestFullscreen();
+  });
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>

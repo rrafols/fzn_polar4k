@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""
+gen_glyphs.py - bake TrueType glyph outlines into flat triangle lists.
+
+The original Windows intro used wglUseFontOutlines() on "Arial Bold" to get
+polygonal text at runtime.  That API does not exist outside Windows, so we
+pre-tessellate the handful of glyphs the intro uses into common/glyphs.h.
+
+Units match wglUseFontOutlines: 1.0 == one em, origin on the baseline at the
+left side bearing, advance is added to X after each glyph.
+
+Usage:
+    python3 gen_glyphs.py LiberationSans-Bold.ttf ../common/glyphs.h
+
+Dependencies: fonttools, mapbox_earcut  (pip install fonttools mapbox_earcut)
+"""
+import sys
+import numpy as np
+from fontTools.ttLib import TTFont
+from fontTools.pens.basePen import BasePen
+import mapbox_earcut as earcut
+
+TEXTS = ["fuzzion", ".chucho", "bp", "Ufix", "Pain", "Wonder", "Loading"]
+CURVE_STEPS = 8   # segments per bezier
+
+
+class FlattenPen(BasePen):
+    """Collects closed contours as lists of (x, y), flattening curves."""
+
+    def __init__(self, glyphSet):
+        super().__init__(glyphSet)
+        self.contours = []
+        self.cur = None
+
+    def _moveTo(self, p):
+        self.cur = [p]
+
+    def _lineTo(self, p):
+        self.cur.append(p)
+
+    def _curveToOne(self, p1, p2, p3):
+        p0 = self.cur[-1]
+        for i in range(1, CURVE_STEPS + 1):
+            t = i / CURVE_STEPS
+            mt = 1 - t
+            x = mt**3 * p0[0] + 3 * mt * mt * t * p1[0] + 3 * mt * t * t * p2[0] + t**3 * p3[0]
+            y = mt**3 * p0[1] + 3 * mt * mt * t * p1[1] + 3 * mt * t * t * p2[1] + t**3 * p3[1]
+            self.cur.append((x, y))
+
+    def _qCurveToOne(self, p1, p2):
+        p0 = self.cur[-1]
+        for i in range(1, CURVE_STEPS + 1):
+            t = i / CURVE_STEPS
+            mt = 1 - t
+            x = mt * mt * p0[0] + 2 * mt * t * p1[0] + t * t * p2[0]
+            y = mt * mt * p0[1] + 2 * mt * t * p1[1] + t * t * p2[1]
+            self.cur.append((x, y))
+
+    def _closePath(self):
+        if self.cur and len(self.cur) >= 3:
+            if self.cur[0] == self.cur[-1]:
+                self.cur.pop()
+            self.contours.append(self.cur)
+        self.cur = None
+
+    def _endPath(self):
+        self._closePath()
+
+
+def signed_area(c):
+    a = 0.0
+    for i in range(len(c)):
+        x0, y0 = c[i]
+        x1, y1 = c[(i + 1) % len(c)]
+        a += x0 * y1 - x1 * y0
+    return a * 0.5
+
+
+def point_in_poly(pt, poly):
+    x, y = pt
+    inside = False
+    n = len(poly)
+    for i in range(n):
+        x0, y0 = poly[i]
+        x1, y1 = poly[(i + 1) % n]
+        if (y0 > y) != (y1 > y):
+            xi = x0 + (y - y0) * (x1 - x0) / (y1 - y0)
+            if x < xi:
+                inside = not inside
+    return inside
+
+
+def triangulate(contours):
+    """Return a flat list of (x,y) triangle vertices for a glyph."""
+    # Classify contours: a contour nested inside an odd number of others is a hole.
+    depth = []
+    for i, c in enumerate(contours):
+        d = 0
+        for j, o in enumerate(contours):
+            if i != j and point_in_poly(c[0], o):
+                d += 1
+        depth.append(d)
+    outers = [i for i in range(len(contours)) if depth[i] % 2 == 0]
+    holes = [i for i in range(len(contours)) if depth[i] % 2 == 1]
+
+    tris = []
+    for oi in outers:
+        rings = [contours[oi]]
+        for hi in holes:
+            # hole belongs to the innermost containing outer: the one with the
+            # highest depth among outers that contain it.
+            containing = [o for o in outers if point_in_poly(contours[hi][0], contours[o])]
+            if containing and max(containing, key=lambda o: depth[o]) == oi:
+                rings.append(contours[hi])
+        verts = np.array([p for r in rings for p in r], dtype=np.float64)
+        ends = np.cumsum([len(r) for r in rings]).astype(np.uint32)
+        idx = earcut.triangulate_float64(verts, ends)
+        for k in range(0, len(idx), 3):
+            a, b, c = verts[idx[k]], verts[idx[k + 1]], verts[idx[k + 2]]
+            # keep a consistent counter-clockwise winding (+Z facing)
+            if (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) < 0:
+                b, c = c, b
+            tris += [tuple(a), tuple(b), tuple(c)]
+    return tris
+
+
+def main():
+    if len(sys.argv) != 3:
+        print(__doc__)
+        sys.exit(1)
+    font = TTFont(sys.argv[1])
+    upem = font["head"].unitsPerEm
+    cmap = font.getBestCmap()
+    gs = font.getGlyphSet()
+    hmtx = font["hmtx"]
+
+    chars = sorted(set("".join(TEXTS)))
+    all_verts = []
+    table = {}
+    for ch in chars:
+        gname = cmap[ord(ch)]
+        pen = FlattenPen(gs)
+        gs[gname].draw(pen)
+        tris = triangulate(pen.contours)
+        adv = hmtx[gname][0] / upem
+        table[ch] = (adv, len(all_verts) // 2, len(tris))
+        for (x, y) in tris:
+            all_verts += [x / upem, y / upem]
+
+    with open(sys.argv[2], "w") as f:
+        f.write("/* Generated by tools/gen_glyphs.py from %s - do not edit. */\n" % sys.argv[1].split("/")[-1])
+        f.write("/* Font: Liberation Sans Bold (SIL Open Font License), metric-compatible with Arial Bold. */\n")
+        f.write("#ifndef GLYPHS_H\n#define GLYPHS_H\n\n")
+        f.write("typedef struct { float advance; int first; int count; } glyph_t;\n\n")
+        f.write("#define GLYPH_NVERTS %d\n\n" % (len(all_verts) // 2))
+        f.write("static const float glyph_verts[GLYPH_NVERTS*2] = {\n")
+        for i in range(0, len(all_verts), 6):
+            f.write("    " + ", ".join("%.5ff" % v for v in all_verts[i:i + 6]) + ",\n")
+        f.write("};\n\n")
+        f.write("/* indexed by ASCII code; unused glyphs are all-zero */\n")
+        f.write("static const glyph_t glyph_table[128] = {\n")
+        for code in range(128):
+            ch = chr(code)
+            if ch in table:
+                adv, first, count = table[ch]
+                f.write("    /* '%s' */ { %.5ff, %d, %d },\n" % (ch, adv, first, count))
+            else:
+                f.write("    { 0.f, 0, 0 },\n")
+        f.write("};\n\n#endif\n")
+    print("wrote %s: %d glyphs, %d triangle vertices" % (sys.argv[2], len(chars), len(all_verts) // 2))
+
+
+if __name__ == "__main__":
+    main()
