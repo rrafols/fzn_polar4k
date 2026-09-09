@@ -1,6 +1,6 @@
-# Polarfield (fuzzion, 2010)
+# Polarfield 4k by fuzzion (2006)
 
-Source code of *Polarfield*, a 4k intro released by fuzzion in 2010, together
+Source code of *Polarfield*, a 4k intro released by fuzzion in 2006, together
 with a platform-independent rewrite of its core and native ports for macOS and
 the web.
 
